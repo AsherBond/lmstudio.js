@@ -51,7 +51,7 @@ export class Signal<TValue> extends Subscribable<TValue> {
   ) {
     super();
   }
-  private subscribers: Set<(value: TValue) => void> = new Set();
+  private subscribers: Set<(value: TValue, patches: Array<Patch>) => void> = new Set();
   /**
    * Returns the current value of the signal.
    */
@@ -61,15 +61,15 @@ export class Signal<TValue> extends Subscribable<TValue> {
   private queuedUpdate: TValue | typeof notQueued = notQueued;
   private queuedPatches: Array<Patch> = [];
   private isEmitting = false;
-  private notify(value: TValue) {
+  private notify(value: TValue, patches: Array<Patch>) {
     for (const subscriber of this.subscribers) {
-      subscriber(value);
+      subscriber(value, patches);
     }
   }
-  private notifyAndUpdateIfChanged(value: TValue) {
+  private notifyAndUpdateIfChanged(value: TValue, patches: Array<Patch>) {
     if (!this.equalsPredicate(this.value, value)) {
       this.value = value;
-      this.notify(value);
+      this.notify(value, patches);
     }
   }
 
@@ -94,11 +94,13 @@ export class Signal<TValue> extends Subscribable<TValue> {
     }
     this.isEmitting = true;
     try {
-      this.notifyAndUpdateIfChanged(value);
+      this.notifyAndUpdateIfChanged(value, patches ?? [this.makeReplaceRootPatch(value)]);
       while (this.queuedUpdate !== notQueued) {
         const queuedValue = this.queuedUpdate;
+        const queuedPatches = this.queuedPatches;
         this.queuedUpdate = notQueued;
-        this.notifyAndUpdateIfChanged(queuedValue);
+        this.queuedPatches = [];
+        this.notifyAndUpdateIfChanged(queuedValue, queuedPatches);
       }
     } finally {
       this.isEmitting = false;
@@ -127,7 +129,7 @@ export class Signal<TValue> extends Subscribable<TValue> {
    *  - Callbacks are tracked with a set. Adding the same subscriber will not cause it to be called
    *    multiple times.
    */
-  public subscribe(callback: (value: TValue) => void): () => void {
+  public subscribe(callback: (value: TValue, patches: Array<Patch>) => void): () => void {
     this.subscribers.add(callback);
     return () => {
       this.subscribers.delete(callback);

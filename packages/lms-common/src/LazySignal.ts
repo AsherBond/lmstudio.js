@@ -5,11 +5,9 @@ import { Subscribable } from "./Subscribable";
 import { makePromise } from "./makePromise";
 
 export type NotAvailable = typeof LazySignal.NOT_AVAILABLE;
-export type UpdatePatches = typeof LazySignal.UPDATE_PATCHES;
 
 export interface SubscribeUpstreamListener<TData> {
-  (data: TData): () => void;
-  (symbolPatches: UpdatePatches, patches: Array<Patch>): () => void;
+  (patches: Array<Patch>): void;
 }
 type SubscribeUpstream<TData> = (listener: SubscribeUpstreamListener<TData>) => () => void;
 
@@ -27,7 +25,6 @@ export class LazySignal<TData>
   implements OmitStatics<Signal<TData>, "create">
 {
   public static readonly NOT_AVAILABLE = Symbol("notAvailable");
-  public static readonly UPDATE_PATCHES = Symbol("updatePatches");
   private readonly signal: Signal<TData>;
   private readonly setValue: SignalSetter<TData>;
   private dataIsStale = true;
@@ -36,14 +33,14 @@ export class LazySignal<TData>
 
   public static create<TData>(
     initialValue: TData,
-    upstreamSubscriber: SubscribeUpstream<TData>,
+    upstreamPatchesSubscriber: SubscribeUpstream<TData>,
     equalsPredicate: (a: TData, b: TData) => boolean = (a, b) => a === b,
   ) {
-    return new LazySignal(initialValue, upstreamSubscriber, equalsPredicate);
+    return new LazySignal(initialValue, upstreamPatchesSubscriber, equalsPredicate);
   }
 
   public static createWithoutInitialValue<TData>(
-    upstreamSubscriber: SubscribeUpstream<TData>,
+    upstreamPatchesSubscriber: SubscribeUpstream<TData>,
     equalsPredicate: (a: TData, b: TData) => boolean = (a, b) => a === b,
   ): LazySignal<TData | NotAvailable> {
     const fullEqualsPredicate = (a: TData | NotAvailable, b: TData | NotAvailable) => {
@@ -61,7 +58,7 @@ export class LazySignal<TData>
 
   protected constructor(
     initialValue: TData,
-    private readonly upstreamSubscriber: (listener: (data: TData) => void) => () => void,
+    private readonly upstreamSubscriber: SubscribeUpstream<TData>,
     equalsPredicate: (a: TData, b: TData) => boolean = (a, b) => a === b,
   ) {
     super();
@@ -87,7 +84,7 @@ export class LazySignal<TData>
   }
 
   private subscribeToUpstream() {
-    this.upstreamUnsubscribe = this.upstreamSubscriber(data => {
+    this.upstreamUnsubscribe = this.upstreamSubscriber(patches => {
       this.dataIsStale = false;
       this.setValue(data);
     });

@@ -1,6 +1,5 @@
 import { type Patch } from "immer";
-import { type OmitStatics } from "./OmitStatics";
-import { Signal } from "./Signal";
+import { Signal, type SignalLike } from "./Signal";
 import { Subscribable } from "./Subscribable";
 import { makePromise } from "./makePromise";
 import { type Setter } from "./makeSetter";
@@ -10,8 +9,13 @@ export type NotAvailable = typeof LazySignal.NOT_AVAILABLE;
 export interface SubscribeUpstreamListener<TData> {
   (data: TData): void;
 }
-type SubscribeUpstream<TData> = (
+export type SubscribeUpstream<TData> = (
   listener: SubscribeUpstreamListener<TData>,
+  /**
+   * The error listener should be called when the upstream subscription encounters an error. Once
+   * and error is encountered, the subscription to the upstream is assumed to be terminated, meaning
+   * the unsubscriber will NOT be called.
+   */
   errorListener: (error: any) => void,
 ) => () => void;
 
@@ -24,16 +28,14 @@ type SubscribeUpstream<TData> = (
  * yet. This can happen when the signal is created without an initial value and the upstream has not
  * emitted a value yet.
  */
-export class LazySignal<TData>
-  extends Subscribable<TData>
-  implements OmitStatics<Signal<TData>, "create">
-{
+export class LazySignal<TData> extends Subscribable<TData> implements SignalLike<TData> {
   public static readonly NOT_AVAILABLE = Symbol("notAvailable");
   private readonly signal: Signal<TData>;
   private readonly setValue: Setter<TData>;
   private dataIsStale = true;
   private upstreamUnsubscribe: (() => void) | null = null;
   private subscribersCount = 0;
+  private isSubscribedToUpstream = false;
 
   public static create<TData>(
     initialValue: TData,
@@ -72,13 +74,15 @@ export class LazySignal<TData>
   /**
    * Returns whether the value is currently stale.
    *
-   * A value is stale whenever the upstream subscription is not active. This can happen in two
+   * A value is stale whenever the upstream subscription is not active. This can happen in three
    * cases:
    *
    * 1. When no subscriber is attached to this signal, the signal will not subscribe to the
    *    upstream. In this case, the value is always stale.
    * 2. When a subscriber is attached, but the upstream has not yet emitted a single value, the
    *    value is also stale.
+   * 3. When the upstream has emitted an error. In this case, the subscription to the upstream is
+   *    terminated and the value is stale.
    *
    * If you wish to get the current value and esnure that it is not stale, use the method
    * {@link LazySignal#pull}.
@@ -88,7 +92,8 @@ export class LazySignal<TData>
   }
 
   private subscribeToUpstream() {
-    let subscribed = false;
+    this.isSubscribedToUpstream = true;
+    let subscribed = true;
     const unsubscribeFromUpstream = this.upstreamSubscriber(
       data => {
         if (!subscribed) {
@@ -97,7 +102,16 @@ export class LazySignal<TData>
         this.dataIsStale = false;
         this.setValue(data);
       },
-      error => {},
+      error => {
+        if (!subscribed) {
+          return;
+        }
+        Promise.reject(error); // Prints a global error for now
+        this.dataIsStale = true;
+        this.isSubscribedToUpstream = false;
+        this.upstreamUnsubscribe = null;
+        subscribed = false;
+      },
     );
     this.upstreamUnsubscribe = () => {
       if (subscribed) {
@@ -108,6 +122,7 @@ export class LazySignal<TData>
   }
 
   private unsubscribeFromUpstream() {
+    this.isSubscribedToUpstream = false;
     if (this.upstreamUnsubscribe !== null) {
       this.upstreamUnsubscribe();
       this.upstreamUnsubscribe = null;
@@ -144,7 +159,7 @@ export class LazySignal<TData>
   }
 
   public subscribe(callback: (value: TData, patches: Array<Patch>) => void): () => void {
-    if (this.subscribersCount === 0) {
+    if (!this.isSubscribedToUpstream) {
       this.subscribeToUpstream();
     }
     this.subscribersCount++;
@@ -157,7 +172,7 @@ export class LazySignal<TData>
       unsubscribe();
       unsubscribeCalled = true;
       this.subscribersCount--;
-      if (this.subscribersCount === 0) {
+      if (this.subscribersCount === 0 && this.isSubscribedToUpstream) {
         this.unsubscribeFromUpstream();
       }
     };

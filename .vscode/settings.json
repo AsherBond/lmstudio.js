@@ -15,7 +15,8 @@
     "lmstudio",
     "proxying",
     "Rpcs",
-    "Streamable"
+    "Streamable",
+    "unsubscriber"
   ],
   "rewrap.wrappingColumn": 100,
   "jest.runMode": "on-demand",

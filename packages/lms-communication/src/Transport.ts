@@ -44,7 +44,7 @@ const clientToServerMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("signalSubscribe"),
     endpoint: z.string(),
     subscribeId: z.number(),
-    parameter: z.any(),
+    creationParameter: z.any(),
   }),
   z.object({
     type: z.literal("signalUnsubscribe"),

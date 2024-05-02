@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-types */
-import { type Signal } from "@lmstudio/lms-common";
+import { type SignalLike, type Signal } from "@lmstudio/lms-common";
 import { type z, type ZodType } from "zod";
 import type { Channel } from "./Channel";
 
@@ -22,7 +22,7 @@ export type ChannelEndpointHandler<
 export type SignalEndpointHandler<TContext = any, TCreationParameter = any, TData = any> = (
   ctx: TContext,
   creationParameter: TCreationParameter,
-) => Signal<TData>;
+) => SignalLike<TData> | Promise<SignalLike<TData>>;
 
 export interface RpcEndpoint {
   name: string;
@@ -89,7 +89,7 @@ export class BackendInterface<
   public constructor() {}
 
   public withContextType<TContextType>() {
-    return this as any as BackendInterface<TContextType, TRpcEndpoints, TChannelEndpoints>;
+    return this as any as BackendInterface<TContextType, TRpcEndpoints, TChannelEndpoints, TSignalEndpoints>;
   }
 
   private assertEndpointNameNotExists(endpointName: string) {

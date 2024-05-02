@@ -1,4 +1,5 @@
 import {
+  LazySignal,
   SimpleLogger,
   Validator,
   changeErrorStackInPlace,
@@ -19,8 +20,13 @@ import { Channel } from "@lmstudio/lms-communication";
 import {
   type ChannelEndpointsSpecBase,
   type RpcEndpointsSpecBase,
+  type SignalEndpoint,
+  type SignalEndpointsSpecBase,
 } from "@lmstudio/lms-communication/dist/BackendInterface";
 import { fromSerializedError, type SerializedLMSExtendedError } from "@lmstudio/lms-shared-types";
+import { applyPatches, enablePatches } from "immer";
+
+enablePatches();
 
 interface OpenChannel {
   endpoint: ChannelEndpoint;
@@ -39,6 +45,14 @@ interface OngoingRpc {
   reject: (error: any) => void;
 }
 
+interface OpenSignalSubscription {
+  endpoint: SignalEndpoint;
+  getValue: () => any;
+  setValue: (value: any) => void;
+  errored: (error: any) => void;
+  stack?: string;
+}
+
 function defaultErrorDeserializer(serialized: SerializedLMSExtendedError, stack?: string): Error {
   const error = fromSerializedError(serialized);
   if (stack === undefined) {
@@ -52,19 +66,27 @@ function defaultErrorDeserializer(serialized: SerializedLMSExtendedError, stack?
 export class ClientPort<
   TRpcEndpoints extends RpcEndpointsSpecBase,
   TChannelEndpoints extends ChannelEndpointsSpecBase,
+  TSignalEndpoints extends SignalEndpointsSpecBase,
 > {
   private readonly transport: ClientTransport;
   private readonly logger;
   private openChannels = new Map<number, OpenChannel>();
   private ongoingRpcs = new Map<number, OngoingRpc>();
+  private openSignalSubscriptions = new Map<number, OpenSignalSubscription>();
   private openCommunicationsCount = 0;
   private nextChannelId = 0;
+  private nextSubscribeId = 0;
   private producedCommunicationWarningsCount = 0;
   private errorDeserializer: (serialized: SerializedLMSExtendedError, stack?: string) => Error;
   private verboseErrorMessage: boolean;
 
   public constructor(
-    private readonly backendInterface: BackendInterface<unknown, TRpcEndpoints, TChannelEndpoints>,
+    private readonly backendInterface: BackendInterface<
+      unknown,
+      TRpcEndpoints,
+      TChannelEndpoints,
+      TSignalEndpoints
+    >,
     factory: ClientTransportFactory,
     {
       parentLogger,
@@ -106,7 +128,8 @@ export class ClientPort<
 
   private updateOpenCommunicationsCount() {
     const previousCount = this.openCommunicationsCount;
-    this.openCommunicationsCount = this.openChannels.size + this.ongoingRpcs.size;
+    this.openCommunicationsCount =
+      this.openChannels.size + this.ongoingRpcs.size + this.openSignalSubscriptions.size;
     if (this.openCommunicationsCount === 0 && previousCount > 0) {
       this.transport.onHavingNoOpenCommunication();
     } else if (this.openCommunicationsCount === 1 && previousCount === 0) {
@@ -225,6 +248,54 @@ export class ClientPort<
     `;
   }
 
+  private receivedSignalUpdate(message: ServerToClientMessage & { type: "signalUpdate" }) {
+    const openSignalSubscription = this.openSignalSubscriptions.get(message.subscribeId);
+    if (openSignalSubscription === undefined) {
+      this.communicationWarning(
+        `Received signalUpdate for unknown signal, subscribeId = ${message.subscribeId}`,
+      );
+      return;
+    }
+    const patches = message.patches;
+    const beforeValue = openSignalSubscription.getValue();
+    const afterValue = applyPatches(openSignalSubscription.getValue(), patches);
+    const parseResult = openSignalSubscription.endpoint.signalData.safeParse(afterValue);
+    if (!parseResult.success) {
+      this.communicationWarning(text`
+        Received invalid signal patch data, subscribeId = ${message.subscribeId}
+
+        patches = ${patches},
+
+        beforeValue = ${beforeValue},
+
+        afterValue = ${afterValue}.
+
+        Zod error:
+
+        ${Validator.prettyPrintZod("value", parseResult.error)}
+      `);
+      return;
+    }
+    openSignalSubscription.setValue(parseResult.data);
+  }
+
+  private receivedSignalError(message: ServerToClientMessage & { type: "signalError" }) {
+    const openSignalSubscription = this.openSignalSubscriptions.get(message.subscribeId);
+    if (openSignalSubscription === undefined) {
+      this.communicationWarning(
+        `Received signalError for unknown signal, subscribeId = ${message.subscribeId}`,
+      );
+      return;
+    }
+    const error = this.errorDeserializer(
+      message.error,
+      this.verboseErrorMessage ? openSignalSubscription.stack : undefined,
+    );
+    openSignalSubscription.errored(error);
+    this.openSignalSubscriptions.delete(message.subscribeId);
+    this.updateOpenCommunicationsCount();
+  }
+
   private receivedKeepAliveAck(_message: ServerToClientMessage & { type: "keepAliveAck" }) {
     // Do nothing
   }
@@ -253,6 +324,14 @@ export class ClientPort<
       }
       case "rpcError": {
         this.receivedRpcError(message);
+        break;
+      }
+      case "signalUpdate": {
+        this.receivedSignalUpdate(message);
+        break;
+      }
+      case "signalError": {
+        this.receivedSignalError(message);
         break;
       }
       case "communicationWarning": {
@@ -356,19 +435,64 @@ export class ClientPort<
     this.updateOpenCommunicationsCount();
     return openChannel.channel;
   }
+  /**
+   * Creates a readonly lazy signal will subscribe to the signal endpoint with the given name.
+   */
+  public createSignal<TEndpointName extends keyof TSignalEndpoints & string>(
+    endpointName: TEndpointName,
+    param: TSignalEndpoints[TEndpointName]["creationParameter"],
+    { stack }: { stack?: string } = {},
+  ): LazySignal<TSignalEndpoints[TEndpointName]["signalData"]> {
+    const signalEndpoint = this.backendInterface.getSignalEndpoint(endpointName);
+    if (signalEndpoint === undefined) {
+      throw new Error(`No signal endpoint with name ${endpointName}`);
+    }
+    const creationParameter = signalEndpoint.creationParameter.parse(param);
+
+    stack = stack ?? getCurrentStack(1);
+
+    const signal = LazySignal.createWithoutInitialValue((listener, errorListener) => {
+      const subscribeId = this.nextSubscribeId;
+      this.nextSubscribeId++;
+      this.transport.send({
+        type: "signalSubscribe",
+        endpoint: endpointName,
+        subscribeId,
+        creationParameter,
+      });
+      this.openSignalSubscriptions.set(subscribeId, {
+        endpoint: signalEndpoint,
+        getValue: () => signal.get(),
+        setValue: listener,
+        errored: errorListener,
+        stack,
+      });
+      this.updateOpenCommunicationsCount();
+      return () => {
+        this.transport.send({
+          type: "signalUnsubscribe",
+          subscribeId,
+        });
+      };
+    });
+
+    return signal;
+  }
 }
 
 export type InferClientPort<TBackendInterfaceOrCreator> =
   TBackendInterfaceOrCreator extends BackendInterface<
     infer _TContext,
     infer TRpcEndpoints,
-    infer TChannelEndpoints
+    infer TChannelEndpoints,
+    infer TSignalEndpoints
   >
-    ? ClientPort<TRpcEndpoints, TChannelEndpoints>
+    ? ClientPort<TRpcEndpoints, TChannelEndpoints, TSignalEndpoints>
     : TBackendInterfaceOrCreator extends () => BackendInterface<
           infer _TContext,
           infer TRpcEndpoints,
-          infer TChannelEndpoints
+          infer TChannelEndpoints,
+          infer TSignalEndpoints
         >
-      ? ClientPort<TRpcEndpoints, TChannelEndpoints>
+      ? ClientPort<TRpcEndpoints, TChannelEndpoints, TSignalEndpoints>
       : never;

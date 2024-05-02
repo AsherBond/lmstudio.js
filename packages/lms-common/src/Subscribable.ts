@@ -13,7 +13,7 @@ export abstract class Subscribable<TData> {
     return unsubscribe;
   }
 
-  public deriveLazySignal<TOutput>(
+  public derive<TOutput>(
     deriver: (data: TData) => TOutput,
     outputEqualsPredicate: (a: TOutput, b: TOutput) => boolean = (a, b) => a === b,
   ): typeof this extends { get(): TData }

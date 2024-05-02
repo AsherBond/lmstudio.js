@@ -1,4 +1,11 @@
-import { Event, SimpleLogger, text, Validator, type LoggerInterface } from "@lmstudio/lms-common";
+import {
+  Event,
+  SimpleLogger,
+  text,
+  Validator,
+  type LoggerInterface,
+  type SignalLike,
+} from "@lmstudio/lms-common";
 import type {
   BackendInterface,
   ChannelEndpoint,
@@ -11,6 +18,7 @@ import {
   type ChannelEndpointsSpecBase,
   type RpcEndpointsSpecBase,
   type SignalEndpoint,
+  type SignalEndpointsSpecBase,
 } from "@lmstudio/lms-communication/dist/BackendInterface";
 import { serializeError } from "@lmstudio/lms-shared-types";
 import { type Context, type ContextCreator } from "./Authenticator";
@@ -26,12 +34,14 @@ interface OpenChannel {
 
 interface OpenSignalSubscription {
   endpoint: SignalEndpoint;
+  unsubscribe: () => void;
 }
 
 export class ServerPort<
   TContext,
   TRpcEndpoints extends RpcEndpointsSpecBase,
   TChannelEndpoints extends ChannelEndpointsSpecBase,
+  TSignalEndpoints extends SignalEndpointsSpecBase,
 > {
   private readonly transport: ServerTransport;
   private readonly logger;
@@ -42,7 +52,12 @@ export class ServerPort<
   private producedCommunicationWarningsCount = 0;
 
   public constructor(
-    private readonly backendInterface: BackendInterface<TContext, TRpcEndpoints, TChannelEndpoints>,
+    private readonly backendInterface: BackendInterface<
+      TContext,
+      TRpcEndpoints,
+      TChannelEndpoints,
+      TSignalEndpoints
+    >,
     private readonly contextCreator: ContextCreator<Context>,
     factory: ServerTransportFactory,
     {
@@ -250,7 +265,66 @@ export class ServerPort<
       `);
       return;
     }
-    // const signal = endpoint
+    const parseResult = endpoint.creationParameter.safeParse(message.creationParameter);
+    if (!parseResult.success) {
+      this.communicationWarning(text`
+        Received invalid parameter for signalSubscribe, endpointName = ${endpoint.name},
+        creationParameter = ${message.creationParameter}. Zod error:
+
+        ${Validator.prettyPrintZod("creationParameter", parseResult.error)}
+      `);
+      return;
+    }
+    const context = this.contextCreator({
+      type: "signal",
+      endpointName: endpoint.name,
+    });
+    Promise.resolve(endpoint.handler(context, parseResult.data))
+      .then((signal: SignalLike<any>) => {
+        this.transport.send({
+          type: "signalUpdate",
+          subscribeId: message.subscribeId,
+          patches: [
+            {
+              op: "replace",
+              path: [],
+              value: signal.get(),
+            },
+          ],
+        });
+        this.openSignalSubscriptions.set(message.subscribeId, {
+          endpoint,
+          unsubscribe: signal.subscribe((_value, patches) => {
+            this.transport.send({
+              type: "signalUpdate",
+              subscribeId: message.subscribeId,
+              patches,
+            });
+          }),
+        });
+      })
+      .catch(error => {
+        this.transport.send({
+          type: "signalError",
+          subscribeId: message.subscribeId,
+          error: serializeError(error),
+        });
+        context.logger.error("Error in signal handler:", error);
+      });
+  }
+
+  private receivedSignalUnsubscribe(
+    message: ClientToServerMessage & { type: "signalUnsubscribe" },
+  ) {
+    const openSignalSubscription = this.openSignalSubscriptions.get(message.subscribeId);
+    if (openSignalSubscription === undefined) {
+      this.communicationWarning(
+        `Received signalUnsubscribe for unknown subscription, subscribeId = ${message.subscribeId}`,
+      );
+      return;
+    }
+    openSignalSubscription.unsubscribe();
+    this.openSignalSubscriptions.delete(message.subscribeId);
   }
 
   private receivedCommunicationWarning(
@@ -290,6 +364,14 @@ export class ServerPort<
         this.receivedRpcCall(message);
         break;
       }
+      case "signalSubscribe": {
+        this.receivedSignalSubscribe(message);
+        break;
+      }
+      case "signalUnsubscribe": {
+        this.receivedSignalUnsubscribe(message);
+        break;
+      }
       case "communicationWarning": {
         this.receivedCommunicationWarning(message);
         break;
@@ -303,6 +385,9 @@ export class ServerPort<
   private errored = (error: any) => {
     for (const openChannel of this.openChannels.values()) {
       openChannel.errored(error);
+    }
+    for (const openSignalSubscription of this.openSignalSubscriptions.values()) {
+      openSignalSubscription.unsubscribe();
     }
     this.emitCloseEvent();
   };

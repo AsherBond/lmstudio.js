@@ -124,3 +124,8 @@ export class Signal<TValue> extends Subscribable<TValue> {
     };
   }
 }
+
+export interface SignalLike<TValue> extends Subscribable<TValue> {
+  get(): TValue;
+  subscribe(callback: (value: TValue, patches: Array<Patch>) => void): () => void;
+}

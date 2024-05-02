@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-types */
-import { z, type ZodType } from "zod";
+import { type Signal } from "@lmstudio/lms-common";
+import { type z, type ZodType } from "zod";
 import type { Channel } from "./Channel";
 
 export type RpcEndpointHandler<TContext = any, TParameter = any, TReturns = any> = (
@@ -18,6 +19,11 @@ export type ChannelEndpointHandler<
   channel: Channel<TToServerPacket, TToClientPacket>,
 ) => void;
 
+export type SignalEndpointHandler<TContext = any, TCreationParameter = any, TData = any> = (
+  ctx: TContext,
+  creationParameter: TCreationParameter,
+) => Signal<TData>;
+
 export interface RpcEndpoint {
   name: string;
   parameter: z.ZodType;
@@ -31,6 +37,13 @@ export interface ChannelEndpoint {
   toServerPacket: z.ZodType;
   toClientPacket: z.ZodType;
   handler: ChannelEndpointHandler | null;
+}
+
+export interface SignalEndpoint {
+  name: string;
+  creationParameter: z.ZodType;
+  signalData: z.ZodType;
+  handler: SignalEndpointHandler | null;
 }
 
 interface RpcEndpointSpecBase {
@@ -52,15 +65,26 @@ export type ChannelEndpointsSpecBase = {
   [endpointName: string]: ChannelEndpointSpecBase;
 };
 
+interface SignalEndpointSpecBase {
+  creationParameter: any;
+  signalData: any;
+}
+
+export type SignalEndpointsSpecBase = {
+  [endpointName: string]: SignalEndpointSpecBase;
+};
+
 export class BackendInterface<
   TContext = never,
   TRpcEndpoints extends RpcEndpointsSpecBase = {},
   TChannelEndpoints extends ChannelEndpointsSpecBase = {},
+  TSignalEndpoints extends SignalEndpointsSpecBase = {},
 > {
   private unhandledEndpoints = new Set<string>();
   private existingEndpointNames = new Set<string>();
   private rpcEndpoints = new Map<string, RpcEndpoint>();
   private channelEndpoints = new Map<string, ChannelEndpoint>();
+  private signalEndpoints = new Map<string, SignalEndpoint>();
 
   public constructor() {}
 
@@ -98,7 +122,8 @@ export class BackendInterface<
         returns: z.infer<TReturnsZod>;
       };
     },
-    TChannelEndpoints
+    TChannelEndpoints,
+    TSignalEndpoints
   > {
     this.assertEndpointNameNotExists(endpointName);
     this.existingEndpointNames.add(endpointName);
@@ -136,7 +161,8 @@ export class BackendInterface<
         toServerPacket: z.infer<TToServerPacketZod>;
         toClientPacket: z.infer<TToClientPacketZod>;
       };
-    }
+    },
+    TSignalEndpoints
   > {
     this.assertEndpointNameNotExists(endpointName);
     this.existingEndpointNames.add(endpointName);
@@ -166,19 +192,23 @@ export class BackendInterface<
   ): BackendInterface<
     TContext,
     TRpcEndpoints,
-    TChannelEndpoints & {
+    TChannelEndpoints,
+    TSignalEndpoints & {
       [endpointName in TEndpointName]: {
         creationParameter: z.infer<TCreationParameterZod>;
-        toServerPacket: undefined;
-        toClientPacket: z.infer<TSignalDataZod>;
+        signalData: z.infer<TSignalDataZod>;
       };
     }
   > {
-    return this.addChannelEndpoint(endpointName, {
+    this.assertEndpointNameNotExists(endpointName);
+    this.existingEndpointNames.add(endpointName);
+    this.signalEndpoints.set(endpointName, {
+      name: endpointName,
       creationParameter,
-      toServerPacket: z.undefined(),
-      toClientPacket: signalData,
+      signalData,
+      handler: null,
     });
+    return this;
   }
 
   /**
@@ -226,6 +256,28 @@ export class BackendInterface<
     this.unhandledEndpoints.delete(endpointName);
   }
 
+  /**
+   * Adds a handler for a signal endpoint.
+   */
+  public handleSignalEndpoint<TEndpointName extends string>(
+    endpointName: TEndpointName,
+    handler: SignalEndpointHandler<
+      TContext,
+      TSignalEndpoints[TEndpointName]["creationParameter"],
+      TSignalEndpoints[TEndpointName]["signalData"]
+    >,
+  ) {
+    const endpoint = this.signalEndpoints.get(endpointName);
+    if (endpoint === undefined) {
+      throw new Error(`No signal endpoint with name ${endpointName}`);
+    }
+    if (endpoint.handler !== null) {
+      throw new Error(`Signal endpoint with name ${endpointName} already has a handler`);
+    }
+    endpoint.handler = handler;
+    this.unhandledEndpoints.delete(endpointName);
+  }
+
   public assertAllEndpointsHandled() {
     if (this.unhandledEndpoints.size > 0) {
       throw new Error(
@@ -242,5 +294,9 @@ export class BackendInterface<
 
   public getChannelEndpoint(endpointName: string) {
     return this.channelEndpoints.get(endpointName);
+  }
+
+  public getSignalEndpoint(endpointName: string) {
+    return this.signalEndpoints.get(endpointName);
   }
 }

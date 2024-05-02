@@ -3,6 +3,16 @@ import { serializedLMSExtendedErrorSchema } from "@lmstudio/lms-shared-types";
 import { z } from "zod";
 
 const clientToServerMessageSchema = z.discriminatedUnion("type", [
+  // Communication
+  z.object({
+    type: z.literal("communicationWarning"),
+    warning: z.string(),
+  }),
+  z.object({
+    type: z.literal("keepAlive"),
+  }),
+
+  // Channel
   z.object({
     type: z.literal("channelCreate"),
     endpoint: z.string(),
@@ -20,24 +30,41 @@ const clientToServerMessageSchema = z.discriminatedUnion("type", [
     channelId: z.number(),
     ackId: z.number(),
   }),
+
+  // RPC
   z.object({
     type: z.literal("rpcCall"),
     endpoint: z.string(),
     callId: z.number(),
     parameter: z.any(),
   }),
+
+  // Signal
   z.object({
-    type: z.literal("communicationWarning"),
-    warning: z.string(),
+    type: z.literal("signalSubscribe"),
+    endpoint: z.string(),
+    subscribeId: z.number(),
+    parameter: z.any(),
   }),
   z.object({
-    type: z.literal("keepAlive"),
+    type: z.literal("signalUnsubscribe"),
+    subscribeId: z.number(),
   }),
 ]);
 
 export type ClientToServerMessage = z.infer<typeof clientToServerMessageSchema>;
 
 const serverToClientMessageSchema = z.discriminatedUnion("type", [
+  // Communication
+  z.object({
+    type: z.literal("communicationWarning"),
+    warning: z.string(),
+  }),
+  z.object({
+    type: z.literal("keepAliveAck"),
+  }),
+
+  // Channel
   z.object({
     type: z.literal("channelSend"),
     channelId: z.number(),
@@ -58,6 +85,8 @@ const serverToClientMessageSchema = z.discriminatedUnion("type", [
     channelId: z.number(),
     error: serializedLMSExtendedErrorSchema,
   }),
+
+  // RPC
   z.object({
     type: z.literal("rpcResult"),
     callId: z.number(),
@@ -68,12 +97,17 @@ const serverToClientMessageSchema = z.discriminatedUnion("type", [
     callId: z.number(),
     error: serializedLMSExtendedErrorSchema,
   }),
+
+  // Readonly signal
   z.object({
-    type: z.literal("communicationWarning"),
-    warning: z.string(),
+    type: z.literal("signalUpdate"),
+    subscribeId: z.number(),
+    patches: z.array(z.any()),
   }),
   z.object({
-    type: z.literal("keepAliveAck"),
+    type: z.literal("signalError"),
+    subscribeId: z.number(),
+    error: serializedLMSExtendedErrorSchema,
   }),
 ]);
 

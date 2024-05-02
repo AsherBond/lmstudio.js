@@ -12,6 +12,7 @@ export { Event } from "./Event";
 export { lmsDefaultPorts } from "./lmsDefaultPorts";
 export { makePrettyError, makeTitledPrettyError } from "./makePrettyError";
 export { makePromise } from "./makePromise";
+export { makeSetter, makeSetterWithPatches, Setter } from './makeSetter';
 export { removeUndefinedValues } from "./removeUndefinedValues";
 export {
   createResultSchema,
@@ -21,10 +22,10 @@ export {
   promiseToResult,
   Result,
   unwrapPromiseOfMaybeErrored,
-  unwrapPromiseOfResult,
+  unwrapPromiseOfResult
 } from "./resultTypes";
 export { runOnDispose } from "./runOnDispose";
-export { Signal, SignalSetter } from "./Signal";
+export { Signal } from "./Signal";
 export { LoggerInterface, SimpleLogger, SimpleLoggerConstructorOpts } from "./SimpleLogger";
 export { StreamablePromise } from "./StreamablePromise";
 export { text } from "./text";
@@ -33,3 +34,4 @@ export { toJSONSafeNumber } from "./toJSONSafeNumber";
 export { Validator } from "./Validator";
 export { PagerExitedError, QueueClearedError, WaitQueue } from "./WaitQueue";
 export { failOk, filteredArray } from "./zodHelpers";
+

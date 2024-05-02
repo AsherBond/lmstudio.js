@@ -10,6 +10,7 @@ import { Channel } from "@lmstudio/lms-communication";
 import {
   type ChannelEndpointsSpecBase,
   type RpcEndpointsSpecBase,
+  type SignalEndpoint,
 } from "@lmstudio/lms-communication/dist/BackendInterface";
 import { serializeError } from "@lmstudio/lms-shared-types";
 import { type Context, type ContextCreator } from "./Authenticator";
@@ -23,6 +24,10 @@ interface OpenChannel {
   closed: () => void;
 }
 
+interface OpenSignalSubscription {
+  endpoint: SignalEndpoint;
+}
+
 export class ServerPort<
   TContext,
   TRpcEndpoints extends RpcEndpointsSpecBase,
@@ -31,6 +36,7 @@ export class ServerPort<
   private readonly transport: ServerTransport;
   private readonly logger;
   private readonly openChannels = new Map<number, OpenChannel>();
+  private readonly openSignalSubscriptions = new Map<number, OpenSignalSubscription>();
   public readonly closeEvent: Event<void>;
   private readonly emitCloseEvent: () => void;
   private producedCommunicationWarningsCount = 0;
@@ -221,6 +227,30 @@ export class ServerPort<
         });
         context.logger.error("Error in RPC handler:", error);
       });
+  }
+
+  private receivedSignalSubscribe(message: ClientToServerMessage & { type: "signalSubscribe" }) {
+    const endpoint = this.backendInterface.getSignalEndpoint(message.endpoint);
+    if (endpoint === undefined) {
+      this.communicationWarning(
+        `Received signalSubscribe for unknown endpoint, endpoint = ${message.endpoint}`,
+      );
+      return;
+    }
+    if (endpoint.handler === null) {
+      this.communicationWarning(
+        `Received signalSubscribe for unhandled endpoint, endpoint = ${message.endpoint}`,
+      );
+      return;
+    }
+    if (this.openSignalSubscriptions.has(message.subscribeId)) {
+      this.communicationWarning(text`
+        Received signalSubscribe for already open subscription, subscribeId =
+        ${message.subscribeId}
+      `);
+      return;
+    }
+    // const signal = endpoint
   }
 
   private receivedCommunicationWarning(

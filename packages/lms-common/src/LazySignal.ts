@@ -1,15 +1,19 @@
 import { type Patch } from "immer";
 import { type OmitStatics } from "./OmitStatics";
-import { Signal, type SignalSetter } from "./Signal";
+import { Signal } from "./Signal";
 import { Subscribable } from "./Subscribable";
 import { makePromise } from "./makePromise";
+import { type Setter } from "./makeSetter";
 
 export type NotAvailable = typeof LazySignal.NOT_AVAILABLE;
 
 export interface SubscribeUpstreamListener<TData> {
-  (patches: Array<Patch>): void;
+  (data: TData): void;
 }
-type SubscribeUpstream<TData> = (listener: SubscribeUpstreamListener<TData>) => () => void;
+type SubscribeUpstream<TData> = (
+  listener: SubscribeUpstreamListener<TData>,
+  errorListener: (error: any) => void,
+) => () => void;
 
 /**
  * A lazy signal is a signal that will only subscribe to the upstream when at least one subscriber
@@ -26,7 +30,7 @@ export class LazySignal<TData>
 {
   public static readonly NOT_AVAILABLE = Symbol("notAvailable");
   private readonly signal: Signal<TData>;
-  private readonly setValue: SignalSetter<TData>;
+  private readonly setValue: Setter<TData>;
   private dataIsStale = true;
   private upstreamUnsubscribe: (() => void) | null = null;
   private subscribersCount = 0;
@@ -51,7 +55,7 @@ export class LazySignal<TData>
     };
     return new LazySignal<TData | NotAvailable>(
       LazySignal.NOT_AVAILABLE,
-      upstreamSubscriber,
+      upstreamPatchesSubscriber,
       fullEqualsPredicate,
     );
   }
@@ -84,10 +88,23 @@ export class LazySignal<TData>
   }
 
   private subscribeToUpstream() {
-    this.upstreamUnsubscribe = this.upstreamSubscriber(patches => {
-      this.dataIsStale = false;
-      this.setValue(data);
-    });
+    let subscribed = false;
+    const unsubscribeFromUpstream = this.upstreamSubscriber(
+      data => {
+        if (!subscribed) {
+          return;
+        }
+        this.dataIsStale = false;
+        this.setValue(data);
+      },
+      error => {},
+    );
+    this.upstreamUnsubscribe = () => {
+      if (subscribed) {
+        subscribed = false;
+        unsubscribeFromUpstream();
+      }
+    };
   }
 
   private unsubscribeFromUpstream() {
@@ -111,8 +128,8 @@ export class LazySignal<TData>
   }
 
   /**
-   * Pulls the current value of the signal. If the value is stale, it will wait for the next value
-   * from the upstream and return it.
+   * Pulls the current value of the signal. If the value is stale, it will subscribe and wait for
+   * the next value from the upstream and return it.
    */
   public async pull(): Promise<TData> {
     const { promise, resolve } = makePromise<TData>();

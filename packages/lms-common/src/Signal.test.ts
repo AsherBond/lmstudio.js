@@ -18,9 +18,9 @@ test("notify the subscribers", () => {
   expect(subscriber2).not.toHaveBeenCalled();
   setSignal(1);
   expect(subscriber1).toHaveBeenCalledTimes(1);
-  expect(subscriber1).toHaveBeenCalledWith(1);
+  expect(subscriber1).toHaveBeenCalledWith(1, [{ op: "replace", path: [], value: 1 }]);
   expect(subscriber2).toHaveBeenCalledTimes(1);
-  expect(subscriber2).toHaveBeenCalledWith(1);
+  expect(subscriber2).toHaveBeenCalledWith(1, [{ op: "replace", path: [], value: 1 }]);
 });
 
 test("removing a subscriber", () => {
@@ -93,8 +93,8 @@ test("callback update value once, the update should be queued", () => {
 
   setSignal(1);
   expect(subscriber).toHaveBeenCalledTimes(2);
-  expect(subscriber.mock.calls[0]).toEqual([1]);
-  expect(subscriber.mock.calls[1]).toEqual([2]);
+  expect(subscriber.mock.calls[0]).toEqual([1, [{ op: "replace", path: [], value: 1 }]]);
+  expect(subscriber.mock.calls[1]).toEqual([2, [{ op: "replace", path: [], value: 2 }]]);
 });
 
 test("callback update value twice, the middle update should be ignored", () => {
@@ -109,6 +109,25 @@ test("callback update value twice, the middle update should be ignored", () => {
 
   setSignal(1);
   expect(subscriber).toHaveBeenCalledTimes(2);
-  expect(subscriber.mock.calls[0]).toEqual([1]);
-  expect(subscriber.mock.calls[1]).toEqual([3]);
+  expect(subscriber.mock.calls[0]).toEqual([1, [{ op: "replace", path: [], value: 1 }]]);
+  expect(subscriber.mock.calls[1]).toEqual([3, [{ op: "replace", path: [], value: 3 }]]);
+});
+
+test("increment three times in subscribe, should bump value to 4", () => {
+  const [signal, setSignal] = Signal.create(0);
+  const unsubscribe = signal.subscribe(value => {
+    if (value === 1) {
+      unsubscribe();
+    }
+    setSignal.withUpdater(value => value + 1);
+    setSignal.withUpdater(value => value + 1);
+    setSignal.withUpdater(value => value + 1);
+  });
+  const subscriber = jest.fn();
+  signal.subscribe(subscriber);
+
+  setSignal(1);
+  expect(subscriber).toHaveBeenCalledTimes(2);
+  expect(subscriber.mock.calls[0]).toEqual([1, [{ op: "replace", path: [], value: 1 }]]);
+  expect(subscriber.mock.calls[1]).toEqual([4, [{ op: "replace", path: [], value: 4 }]]);
 });

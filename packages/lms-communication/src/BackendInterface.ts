@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-types */
-import { type SignalLike, type Signal } from "@lmstudio/lms-common";
+import { type SignalLike, type WriteTag } from "@lmstudio/lms-common";
 import { type z, type ZodType } from "zod";
 import type { Channel } from "./Channel";
 
@@ -24,6 +24,21 @@ export type SignalEndpointHandler<TContext = any, TCreationParameter = any, TDat
   creationParameter: TCreationParameter,
 ) => SignalLike<TData> | Promise<SignalLike<TData>>;
 
+export type WritableSignalEndpointHandler<TContext = any, TCreationParameter = any, TData = any> = (
+  ctx: TContext,
+  creationParameter: TCreationParameter,
+) =>
+  | [
+      signal: SignalLike<TData>,
+      update: (updater: (data: TData) => TData, tags: Array<WriteTag>) => void,
+    ]
+  | Promise<
+      [
+        signal: SignalLike<TData>,
+        update: (updater: (data: TData) => TData, tags: Array<WriteTag>) => void,
+      ]
+    >;
+
 export interface RpcEndpoint {
   name: string;
   parameter: z.ZodType;
@@ -44,6 +59,13 @@ export interface SignalEndpoint {
   creationParameter: z.ZodType;
   signalData: z.ZodType;
   handler: SignalEndpointHandler | null;
+}
+
+export interface WritableSignalEndpoint {
+  name: string;
+  creationParameter: z.ZodType;
+  signalData: z.ZodType;
+  handler: WritableSignalEndpointHandler | null;
 }
 
 interface RpcEndpointSpecBase {
@@ -74,22 +96,39 @@ export type SignalEndpointsSpecBase = {
   [endpointName: string]: SignalEndpointSpecBase;
 };
 
+interface WritableSignalEndpointSpecBase {
+  creationParameter: any;
+  signalData: any;
+}
+
+export type WritableSignalEndpointsSpecBase = {
+  [endpointName: string]: WritableSignalEndpointSpecBase;
+};
+
 export class BackendInterface<
   TContext = never,
   TRpcEndpoints extends RpcEndpointsSpecBase = {},
   TChannelEndpoints extends ChannelEndpointsSpecBase = {},
   TSignalEndpoints extends SignalEndpointsSpecBase = {},
+  TWritableSignalEndpoints extends WritableSignalEndpointsSpecBase = {},
 > {
   private unhandledEndpoints = new Set<string>();
   private existingEndpointNames = new Set<string>();
   private rpcEndpoints = new Map<string, RpcEndpoint>();
   private channelEndpoints = new Map<string, ChannelEndpoint>();
   private signalEndpoints = new Map<string, SignalEndpoint>();
+  private writableSignalEndpoints = new Map<string, WritableSignalEndpoint>();
 
   public constructor() {}
 
   public withContextType<TContextType>() {
-    return this as any as BackendInterface<TContextType, TRpcEndpoints, TChannelEndpoints, TSignalEndpoints>;
+    return this as any as BackendInterface<
+      TContextType,
+      TRpcEndpoints,
+      TChannelEndpoints,
+      TSignalEndpoints,
+      TWritableSignalEndpoints
+    >;
   }
 
   private assertEndpointNameNotExists(endpointName: string) {
@@ -123,7 +162,8 @@ export class BackendInterface<
       };
     },
     TChannelEndpoints,
-    TSignalEndpoints
+    TSignalEndpoints,
+    TWritableSignalEndpoints
   > {
     this.assertEndpointNameNotExists(endpointName);
     this.existingEndpointNames.add(endpointName);
@@ -162,7 +202,8 @@ export class BackendInterface<
         toClientPacket: z.infer<TToClientPacketZod>;
       };
     },
-    TSignalEndpoints
+    TSignalEndpoints,
+    TWritableSignalEndpoints
   > {
     this.assertEndpointNameNotExists(endpointName);
     this.existingEndpointNames.add(endpointName);
@@ -198,11 +239,48 @@ export class BackendInterface<
         creationParameter: z.infer<TCreationParameterZod>;
         signalData: z.infer<TSignalDataZod>;
       };
-    }
+    },
+    TWritableSignalEndpoints
   > {
     this.assertEndpointNameNotExists(endpointName);
     this.existingEndpointNames.add(endpointName);
     this.signalEndpoints.set(endpointName, {
+      name: endpointName,
+      creationParameter,
+      signalData,
+      handler: null,
+    });
+    return this;
+  }
+
+  public addWritableSignalEndpoint<
+    TEndpointName extends string,
+    TCreationParameterZod extends ZodType,
+    TSignalDataZod extends ZodType,
+  >(
+    endpointName: TEndpointName,
+    {
+      creationParameter,
+      signalData,
+    }: {
+      creationParameter: TCreationParameterZod;
+      signalData: TSignalDataZod;
+    },
+  ): BackendInterface<
+    TContext,
+    TRpcEndpoints,
+    TChannelEndpoints,
+    TSignalEndpoints,
+    TWritableSignalEndpoints & {
+      [endpointName in TEndpointName]: {
+        creationParameter: z.infer<TCreationParameterZod>;
+        signalData: z.infer<TSignalDataZod>;
+      };
+    }
+  > {
+    this.assertEndpointNameNotExists(endpointName);
+    this.existingEndpointNames.add(endpointName);
+    this.writableSignalEndpoints.set(endpointName, {
       name: endpointName,
       creationParameter,
       signalData,
@@ -278,6 +356,28 @@ export class BackendInterface<
     this.unhandledEndpoints.delete(endpointName);
   }
 
+  /**
+   * Adds a handler for a writable signal endpoint.
+   */
+  public handleWritableSignalEndpoint<TEndpointName extends string>(
+    endpointName: TEndpointName,
+    handler: WritableSignalEndpointHandler<
+      TContext,
+      TWritableSignalEndpoints[TEndpointName]["creationParameter"],
+      TWritableSignalEndpoints[TEndpointName]["signalData"]
+    >,
+  ) {
+    const endpoint = this.writableSignalEndpoints.get(endpointName);
+    if (endpoint === undefined) {
+      throw new Error(`No writable signal endpoint with name ${endpointName}`);
+    }
+    if (endpoint.handler !== null) {
+      throw new Error(`Writable signal endpoint with name ${endpointName} already has a handler`);
+    }
+    endpoint.handler = handler;
+    this.unhandledEndpoints.delete(endpointName);
+  }
+
   public assertAllEndpointsHandled() {
     if (this.unhandledEndpoints.size > 0) {
       throw new Error(
@@ -298,5 +398,9 @@ export class BackendInterface<
 
   public getSignalEndpoint(endpointName: string) {
     return this.signalEndpoints.get(endpointName);
+  }
+
+  public getWritableSignalEndpoint(endpointName: string) {
+    return this.writableSignalEndpoints.get(endpointName);
   }
 }

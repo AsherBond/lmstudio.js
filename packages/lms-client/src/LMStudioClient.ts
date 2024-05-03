@@ -260,5 +260,13 @@ export class LMStudioClient {
     this.llm = new LLMNamespace(this.llmPort, validator, this.logger);
     this.system = new SystemNamespace(this.systemPort, this.logger);
     this.diagnostics = new DiagnosticsNamespace(this.diagnosticsPort, validator, this.logger);
+
+    const [signal, setSignal] = this.systemPort.createWritableSignal("test", "tester.txt");
+    signal.subscribe(console.log);
+    setInterval(() => {
+      setSignal.withImmer(draft => {
+        draft.timeSeconds += 200;
+      });
+    }, 1000);
   }
 }

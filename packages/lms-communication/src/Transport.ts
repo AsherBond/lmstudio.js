@@ -39,16 +39,34 @@ const clientToServerMessageSchema = z.discriminatedUnion("type", [
     parameter: z.any(),
   }),
 
-  // Signal
+  // Readonly signal
   z.object({
     type: z.literal("signalSubscribe"),
+    creationParameter: z.any(),
     endpoint: z.string(),
     subscribeId: z.number(),
-    creationParameter: z.any(),
   }),
   z.object({
     type: z.literal("signalUnsubscribe"),
     subscribeId: z.number(),
+  }),
+
+  // Writable signal
+  z.object({
+    type: z.literal("writableSignalSubscribe"),
+    creationParameter: z.any(),
+    endpoint: z.string(),
+    subscribeId: z.number(),
+  }),
+  z.object({
+    type: z.literal("writableSignalUnsubscribe"),
+    subscribeId: z.number(),
+  }),
+  z.object({
+    type: z.literal("writableSignalUpdate"),
+    subscribeId: z.number(),
+    patches: z.array(z.any()),
+    tags: z.array(z.union([z.number(), z.string()])),
   }),
 ]);
 
@@ -103,9 +121,23 @@ const serverToClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("signalUpdate"),
     subscribeId: z.number(),
     patches: z.array(z.any()),
+    tags: z.array(z.union([z.number(), z.string()])),
   }),
   z.object({
     type: z.literal("signalError"),
+    subscribeId: z.number(),
+    error: serializedLMSExtendedErrorSchema,
+  }),
+
+  // Writable signal
+  z.object({
+    type: z.literal("writableSignalUpdate"),
+    subscribeId: z.number(),
+    patches: z.array(z.any()),
+    tags: z.array(z.union([z.number(), z.string()])),
+  }),
+  z.object({
+    type: z.literal("writableSignalError"),
     subscribeId: z.number(),
     error: serializedLMSExtendedErrorSchema,
   }),

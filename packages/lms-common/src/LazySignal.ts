@@ -1,13 +1,16 @@
-import { type Patch } from "immer";
-import { Signal, type SignalLike } from "./Signal";
+import { Signal, type SignalLike, type Subscriber } from "./Signal";
 import { Subscribable } from "./Subscribable";
 import { makePromise } from "./makePromise";
-import { type Setter } from "./makeSetter";
+import { type Setter, type WriteTag } from "./makeSetter";
 
 export type NotAvailable = typeof LazySignal.NOT_AVAILABLE;
+export type StripNotAvailable<T> = T extends NotAvailable ? never : T;
+export function isAvailable<T>(data: T): data is StripNotAvailable<T> {
+  return data !== LazySignal.NOT_AVAILABLE;
+}
 
 export interface SubscribeUpstreamListener<TData> {
-  (data: TData): void;
+  (data: StripNotAvailable<TData>, tags?: Array<WriteTag>): void;
 }
 export type SubscribeUpstream<TData> = (
   listener: SubscribeUpstreamListener<TData>,
@@ -39,14 +42,14 @@ export class LazySignal<TData> extends Subscribable<TData> implements SignalLike
 
   public static create<TData>(
     initialValue: TData,
-    upstreamPatchesSubscriber: SubscribeUpstream<TData>,
+    subscribeUpstream: SubscribeUpstream<TData>,
     equalsPredicate: (a: TData, b: TData) => boolean = (a, b) => a === b,
   ) {
-    return new LazySignal(initialValue, upstreamPatchesSubscriber, equalsPredicate);
+    return new LazySignal(initialValue, subscribeUpstream, equalsPredicate);
   }
 
   public static createWithoutInitialValue<TData>(
-    upstreamPatchesSubscriber: SubscribeUpstream<TData>,
+    subscribeUpstream: SubscribeUpstream<TData>,
     equalsPredicate: (a: TData, b: TData) => boolean = (a, b) => a === b,
   ): LazySignal<TData | NotAvailable> {
     const fullEqualsPredicate = (a: TData | NotAvailable, b: TData | NotAvailable) => {
@@ -57,7 +60,7 @@ export class LazySignal<TData> extends Subscribable<TData> implements SignalLike
     };
     return new LazySignal<TData | NotAvailable>(
       LazySignal.NOT_AVAILABLE,
-      upstreamPatchesSubscriber,
+      subscribeUpstream,
       fullEqualsPredicate,
     );
   }
@@ -84,7 +87,7 @@ export class LazySignal<TData> extends Subscribable<TData> implements SignalLike
    * 3. When the upstream has emitted an error. In this case, the subscription to the upstream is
    *    terminated and the value is stale.
    *
-   * If you wish to get the current value and esnure that it is not stale, use the method
+   * If you wish to get the current value and ensure that it is not stale, use the method
    * {@link LazySignal#pull}.
    */
   public isStale() {
@@ -95,12 +98,12 @@ export class LazySignal<TData> extends Subscribable<TData> implements SignalLike
     this.isSubscribedToUpstream = true;
     let subscribed = true;
     const unsubscribeFromUpstream = this.upstreamSubscriber(
-      data => {
+      (data, tags) => {
         if (!subscribed) {
           return;
         }
         this.dataIsStale = false;
-        this.setValue(data);
+        this.setValue(data, tags);
       },
       error => {
         if (!subscribed) {
@@ -132,8 +135,11 @@ export class LazySignal<TData> extends Subscribable<TData> implements SignalLike
 
   /**
    * Gets the current value of the signal. If the value is not available, it will return
-   * {@link LazySignal.NOT_AVAILABLE}. In addition, the value returned by this method may be stale.
-   * Use {@link LazySignal#isStale} to check if the value is stale.
+   * {@link LazySignal.NOT_AVAILABLE}. (A value will only be unavailable if the signal is created
+   * without an initial value and the upstream has not emitted a value yet.)
+   *
+   * In addition, the value returned by this method may be stale. Use {@link LazySignal#isStale} to
+   * check if the value is stale.
    *
    * If you wish to get the current value and ensure that it is not stale, use the method
    * {@link LazySignal#pull}.
@@ -146,24 +152,24 @@ export class LazySignal<TData> extends Subscribable<TData> implements SignalLike
    * Pulls the current value of the signal. If the value is stale, it will subscribe and wait for
    * the next value from the upstream and return it.
    */
-  public async pull(): Promise<TData> {
-    const { promise, resolve } = makePromise<TData>();
+  public async pull(): Promise<StripNotAvailable<TData>> {
+    const { promise, resolve } = makePromise<StripNotAvailable<TData>>();
     if (!this.isStale()) {
       // If not stale, definitely not "NOT_AVAILABLE"
-      resolve(this.get() as TData);
+      resolve(this.get() as StripNotAvailable<TData>);
     }
     this.subscribeOnce(data => {
-      resolve(data as TData);
+      resolve(data as StripNotAvailable<TData>);
     });
     return promise;
   }
 
-  public subscribe(callback: (value: TData, patches: Array<Patch>) => void): () => void {
+  public subscribe(subscriber: Subscriber<TData>): () => void {
     if (!this.isSubscribedToUpstream) {
       this.subscribeToUpstream();
     }
     this.subscribersCount++;
-    const unsubscribe = this.signal.subscribe(callback);
+    const unsubscribe = this.signal.subscribe(subscriber);
     let unsubscribeCalled = false;
     return () => {
       if (unsubscribeCalled) {
@@ -176,5 +182,12 @@ export class LazySignal<TData> extends Subscribable<TData> implements SignalLike
         this.unsubscribeFromUpstream();
       }
     };
+  }
+
+  /**
+   * Subscribes to the signal. Will not cause the signal to subscribe to the upstream.
+   */
+  public passiveSubscribe(subscriber: Subscriber<TData>): () => void {
+    return this.signal.subscribe(subscriber);
   }
 }

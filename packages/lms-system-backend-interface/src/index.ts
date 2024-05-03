@@ -14,9 +14,12 @@ export function createSystemBackendInterface() {
       parameter: z.void(),
       returns: filteredArray(downloadedModelSchema),
     })
-    .addSignalEndpoint("test", {
+    .addWritableSignalEndpoint("test", {
       creationParameter: z.string(),
-      signalData: z.string(),
+      signalData: z.object({
+        timeSeconds: z.number(),
+        someString: z.string(),
+      }),
     });
 }
 

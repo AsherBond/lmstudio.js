@@ -1,10 +1,15 @@
 import { type Patch } from "immer";
 import { Subscribable } from "./Subscribable";
-import { makeSetterWithPatches, type Setter } from "./makeSetter";
+import { makeSetterWithPatches, type Setter, type WriteTag } from "./makeSetter";
 
 const equals = <TValue>(a: TValue, b: TValue) => a === b;
 
 type Updater<TValue> = (oldValue: TValue) => readonly [TValue, Array<Patch>];
+export type Subscriber<TValue> = (
+  value: TValue,
+  patches: Array<Patch>,
+  tags: Array<WriteTag>,
+) => void;
 
 /**
  * A signal is a wrapper for a value. It can be used to notify subscribers when the value changes.
@@ -30,8 +35,8 @@ export class Signal<TValue> extends Subscribable<TValue> {
     equalsPredicate: (a: TValue, b: TValue) => boolean = equals,
   ): readonly [Signal<TValue>, Setter<TValue>] {
     const signal = new Signal(value, equalsPredicate);
-    const update: (updater: Updater<TValue>) => void = updater => {
-      signal.update(updater);
+    const update = (updater: Updater<TValue>, tags?: Array<WriteTag>) => {
+      signal.update(updater, tags);
     };
     const setter = makeSetterWithPatches(update);
     return [signal, setter] as const;
@@ -42,24 +47,25 @@ export class Signal<TValue> extends Subscribable<TValue> {
   ) {
     super();
   }
-  private subscribers: Set<(value: TValue, patches: Array<Patch>) => void> = new Set();
+  private subscribers: Set<Subscriber<TValue>> = new Set();
   /**
    * Returns the current value of the signal.
    */
   public get() {
     return this.value;
   }
-  private queuedUpdaters: Array<Updater<TValue>> = [];
+  private queuedUpdaters: Array<[updater: Updater<TValue>, tags?: Array<WriteTag>]> = [];
   private isEmitting = false;
-  private notify(value: TValue, patches: Array<Patch>) {
+  private notify(value: TValue, patches: Array<Patch>, tags: Array<WriteTag>) {
     for (const subscriber of this.subscribers) {
-      subscriber(value, patches);
+      subscriber(value, patches, tags);
     }
   }
-  private notifyAndUpdateIfChanged(value: TValue, patches: Array<Patch>) {
-    if (!this.equalsPredicate(this.value, value)) {
+  private notifyAndUpdateIfChanged(value: TValue, patches: Array<Patch>, tags: Array<WriteTag>) {
+    // If the value has changed, or if there are any tags that need to be flushed, notify
+    if (tags.length !== 0 || !this.equalsPredicate(this.value, value)) {
       this.value = value;
-      this.notify(value, patches);
+      this.notify(value, patches, tags);
     }
   }
 
@@ -67,8 +73,8 @@ export class Signal<TValue> extends Subscribable<TValue> {
     return patch.path.length === 0 && patch.op === "replace";
   }
 
-  private update(updater: Updater<TValue>) {
-    this.queuedUpdaters.push(updater);
+  private update(updater: Updater<TValue>, tags?: Array<WriteTag>) {
+    this.queuedUpdaters.push([updater, tags]);
     // Only one concurrent update may emit
     if (this.isEmitting) {
       return;
@@ -79,9 +85,10 @@ export class Signal<TValue> extends Subscribable<TValue> {
       while (this.queuedUpdaters.length > 0) {
         let value = this.value;
         let patches: Array<Patch> = [];
+        const tags: Array<WriteTag> = [];
         // Inner while is for handling multiple updates
         while (this.queuedUpdaters.length > 0) {
-          const updater = this.queuedUpdaters.shift()!;
+          const [updater, newTags] = this.queuedUpdaters.shift()!;
           const [newValue, newPatches] = updater(value);
           value = newValue;
           // Extremely rudimentary patch merging
@@ -91,8 +98,11 @@ export class Signal<TValue> extends Subscribable<TValue> {
           } else {
             patches.push(...newPatches);
           }
+          if (newTags !== undefined) {
+            tags.push(...newTags);
+          }
         }
-        this.notifyAndUpdateIfChanged(value, patches);
+        this.notifyAndUpdateIfChanged(value, patches, tags);
       }
     } finally {
       this.isEmitting = false;
@@ -117,7 +127,7 @@ export class Signal<TValue> extends Subscribable<TValue> {
    *  - Callbacks are tracked with a set. Adding the same subscriber will not cause it to be called
    *    multiple times.
    */
-  public subscribe(callback: (value: TValue, patches: Array<Patch>) => void): () => void {
+  public subscribe(callback: Subscriber<TValue>): () => void {
     this.subscribers.add(callback);
     return () => {
       this.subscribers.delete(callback);
@@ -127,5 +137,5 @@ export class Signal<TValue> extends Subscribable<TValue> {
 
 export interface SignalLike<TValue> extends Subscribable<TValue> {
   get(): TValue;
-  subscribe(callback: (value: TValue, patches: Array<Patch>) => void): () => void;
+  subscribe(subscriber: Subscriber<TValue>): () => void;
 }

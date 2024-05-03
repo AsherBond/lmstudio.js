@@ -1,7 +1,6 @@
 import { BufferedEvent, type SimpleLogger } from "@lmstudio/lms-common";
 import {
   type AuthPacket,
-  type BackendInterface,
   type ClientTransportFactory,
   type ServerToClientMessage,
 } from "@lmstudio/lms-communication";
@@ -9,9 +8,15 @@ import {
   AuthenticatedWsClientTransport,
   ClientPort,
   GenericClientTransport,
-  type InferClientPort,
   type LmsHostedEnv,
 } from "@lmstudio/lms-communication-client";
+import {
+  type BackendInterface,
+  type ChannelEndpointsSpecBase,
+  type RpcEndpointsSpecBase,
+  type SignalEndpointsSpecBase,
+  type WritableSignalEndpointsSpecBase,
+} from "@lmstudio/lms-communication/dist/BackendInterface";
 import { type SerializedLMSExtendedError } from "@lmstudio/lms-shared-types";
 
 function createAuthenticatedIpcTransportFactory(
@@ -48,8 +53,19 @@ function createAuthenticatedWsTransportFactory(
   });
 }
 
-export function createAuthenticatedClientPort<TBackendInterface extends BackendInterface>(
-  backendInterface: TBackendInterface,
+export function createAuthenticatedClientPort<
+  TRpcEndpoints extends RpcEndpointsSpecBase,
+  TChannelEndpoints extends ChannelEndpointsSpecBase,
+  TSignalEndpoints extends SignalEndpointsSpecBase,
+  TWritableSignalEndpoints extends WritableSignalEndpointsSpecBase,
+>(
+  backendInterface: BackendInterface<
+    never,
+    TRpcEndpoints,
+    TChannelEndpoints,
+    TSignalEndpoints,
+    TWritableSignalEndpoints
+  >,
   wsAddress: string | Promise<string>,
   apiNamespace: string,
   clientIdentifier: string,
@@ -62,7 +78,7 @@ export function createAuthenticatedClientPort<TBackendInterface extends BackendI
     errorDeserializer?: (serialized: SerializedLMSExtendedError) => Error;
     verboseErrorMessage?: boolean;
   } = {},
-) {
+): ClientPort<TRpcEndpoints, TChannelEndpoints, TSignalEndpoints, TWritableSignalEndpoints> {
   let anyWindow: any;
   try {
     anyWindow = window;
@@ -85,7 +101,7 @@ export function createAuthenticatedClientPort<TBackendInterface extends BackendI
         clientPasskey,
       ),
       { parentLogger: logger, errorDeserializer, verboseErrorMessage },
-    ) as InferClientPort<TBackendInterface>;
+    );
   } else {
     return new ClientPort(
       backendInterface,
@@ -96,6 +112,6 @@ export function createAuthenticatedClientPort<TBackendInterface extends BackendI
         clientPasskey,
       ),
       { parentLogger: logger, errorDeserializer, verboseErrorMessage },
-    ) as InferClientPort<TBackendInterface>;
+    );
   }
 }
